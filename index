@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>快递单号查询与复制</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--text:#1f1f1d;--sub:#77756f;--line:#e4e2dc;--accent:#2a6df4;--ok:#1f9d55;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171716;--card:#232322;--text:#ececea;--sub:#9a9891;--line:#383734;--accent:#6c9cff;--ok:#4cc38a}}
+:root[data-theme="dark"]{--bg:#171716;--card:#232322;--text:#ececea;--sub:#9a9891;--line:#383734;--accent:#6c9cff;--ok:#4cc38a}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;line-height:1.5}
+.wrap{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}
+label{display:block;font-size:13px;color:var(--sub);margin:12px 0 6px}
+textarea,input[type=text]{width:100%;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:10px 12px;font-size:15px;font-family:inherit}
+textarea{min-height:130px;resize:vertical;white-space:pre}
+#tpl{min-height:64px;white-space:pre-wrap}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+button{border:none;border-radius:10px;padding:10px 14px;font-size:14px;background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+button.done{background:var(--ok)}
+.hint{font-size:12px;color:var(--sub);margin-top:6px}
+.count{font-size:13px;color:var(--sub)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.btns{display:flex;gap:6px;flex-shrink:0}
+.btns button{padding:8px 12px;font-size:13px}
+.name{font-weight:600;font-size:16px}
+.meta{font-size:12px;color:var(--sub)}
+.msg{margin-top:8px;font-size:14px;white-space:pre-wrap;word-break:break-all;background:var(--bg);border-radius:8px;padding:8px 10px}
+.empty{text-align:center;color:var(--sub);padding:30px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>快递单号查询与复制</h1>
+
+<label>粘贴订单信息（单号、姓名、省份，每行一条）</label>
+<textarea id="raw" spellcheck="false"></textarea>
+
+<label>话术模板（可用 {姓名} {单号} {省份}）</label>
+<textarea id="tpl" spellcheck="false"></textarea>
+<div class="hint">同一个人有多个单号时，会合并成一条，单号之间用换行分开。</div>
+
+<label>搜索姓名、单号或省份</label>
+<input type="text" id="q" placeholder="输入关键词，例如 陈晨">
+
+<div class="row">
+  <span class="count" id="count"></span>
+  <button class="ghost" id="copyAll">复制当前全部</button>
+</div>
+
+<div id="list"></div>
+</div>
+
+<script>
+const SAMPLE = `YT0000000000001	张三	上海
+YT0000000000002	李四	江苏省
+YT0000000000003	王五	广东省
+YT0000000000004	示例用户	北京`;
+const DEFAULT_TPL = "{姓名}你好，你的快递已发出，圆通单号：{单号}，请注意查收。";
+
+const raw = document.getElementById('raw');
+const tpl = document.getElementById('tpl');
+const q = document.getElementById('q');
+const list = document.getElementById('list');
+const count = document.getElementById('count');
+const copyAll = document.getElementById('copyAll');
+
+function load(k, d){ try{ const v = localStorage.getItem(k); return v==null?d:v; }catch(e){ return d; } }
+function save(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+
+raw.value = SAMPLE;
+tpl.value = load('ex_tpl', DEFAULT_TPL);
+
+function parse(text){
+  const map = new Map();
+  text.split(/\r?\n/).forEach(line=>{
+    line = line.trim();
+    if(!line) return;
+    let parts = line.includes('\t') ? line.split('\t').map(s=>s.trim()).filter(Boolean) : line.split(/\s+/);
+    if(parts.length < 2) return;
+    const no = parts[0];
+    let name, prov;
+    if(parts.length === 2){ name = parts[1]; prov = ''; }
+    else { prov = parts[parts.length-1]; name = parts.slice(1,-1).join(' '); }
+    const key = name + '|' + prov;
+    if(!map.has(key)) map.set(key, {name, prov, nos:[]});
+    map.get(key).nos.push(no);
+  });
+  return [...map.values()];
+}
+
+function build(p){
+  return tpl.value
+    .replaceAll('{姓名}', p.name)
+    .replaceAll('{省份}', p.prov)
+    .replaceAll('{单号}', p.nos.join('\n'));
+}
+
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); return true; }catch(e){}
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta); return ok;
+  }catch(e){ return false; }
+}
+
+function flash(btn, text){
+  const old = btn.textContent;
+  btn.textContent = text; btn.classList.add('done');
+  setTimeout(()=>{ btn.textContent = old; btn.classList.remove('done'); }, 1200);
+}
+
+let current = [];
+function render(){
+  save('ex_tpl', tpl.value);
+  const all = parse(raw.value);
+  const kw = q.value.trim().toLowerCase();
+  current = all.filter(p => !kw || (p.name + p.prov + p.nos.join(' ')).toLowerCase().includes(kw));
+  count.textContent = `共 ${all.length} 人，当前显示 ${current.length} 人`;
+  list.innerHTML = '';
+  if(!current.length){
+    list.innerHTML = '<div class="empty">没有找到匹配的记录</div>';
+    return;
+  }
+  current.forEach(p=>{
+    const card = document.createElement('div');
+    card.className = 'card';
+    const msg = build(p);
+    card.innerHTML = `<div class="top"><div><div class="name"></div><div class="meta"></div></div><div class="btns"><button class="ghost nameBtn">复制姓名</button><button class="noBtn">复制单号</button></div></div><div class="msg"></div>`;
+    card.querySelector('.name').textContent = p.name;
+    card.querySelector('.meta').textContent = p.prov + (p.nos.length>1 ? `　共 ${p.nos.length} 个单号` : '');
+    card.querySelector('.msg').textContent = msg;
+    const btn = card.querySelector('.noBtn');
+    btn.onclick = async ()=>{ flash(btn, (await copyText(msg)) ? '已复制' : '复制失败'); };
+    const nbtn = card.querySelector('.nameBtn');
+    nbtn.onclick = async ()=>{ flash(nbtn, (await copyText(p.name)) ? '已复制' : '复制失败'); };
+    list.appendChild(card);
+  });
+}
+
+copyAll.onclick = async ()=>{
+  const t = current.map(build).join('\n\n');
+  flash(copyAll, (await copyText(t)) ? '已复制' : '复制失败');
+};
+
+[raw, tpl, q].forEach(el => el.addEventListener('input', render));
+render();
+</script>
+</body>
+</html>
